@@ -1,0 +1,15 @@
+# require File.expand_path('../../../fastlane/helpers/credentials_manager.rb', __dir__)
+
+# # Load environment based on NODE_ENV
+# node_env = ENV['NODE_ENV'] || 'development'
+# EnvCredentialsManager.load_credentials('university', node_env)
+
+# iOS configuration
+app_identifier(ENV["UNIVERSITY_APP_IDENTIFIER"])
+apple_id(ENV["FASTLANE_USER"])
+itc_team_id("125843861")
+team_id(ENV["FASTLANE_TEAM_ID"])
+
+# Android configuration
+json_key_file("../android/google-play-key.json") #this path is defined at fastfile at circleCI runtime
+package_name(ENV["UNIVERSITY_APP_IDENTIFIER"])

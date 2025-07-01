@@ -1,0 +1,428 @@
+platform :android do
+
+  before_all do
+    # Decode and save keystore from base64
+    unless ENV['REAN_KEYSTORE_DATA'].nil?
+      # Create directory if it doesn't exist
+      FileUtils.mkdir_p(File.join(Dir.pwd, "../android/app"))
+      # Use consistent path for both writing and referencing
+      keystore_path = File.join(Dir.pwd, "../android/app/release.keystore")
+      File.write(keystore_path, Base64.decode64(ENV['REAN_KEYSTORE_DATA']))
+      ENV['REAN_KEYSTORE_PATH'] = keystore_path
+    end
+    
+    # Save Google Play JSON key to file
+    unless ENV['GOOGLE_SERVICE_JSON_KEY_DATA'].nil?
+      json_key_path = File.join(Dir.pwd, "../android/google-play-key.json")
+      File.write(json_key_path, ENV['GOOGLE_SERVICE_JSON_KEY_DATA'])
+      ENV['GOOGLE_PLAY_JSON_KEY_PATH'] = json_key_path
+    end
+  end
+
+  def get_android_config(env)
+    # Map env to Node environment
+    node_env = case env
+      when 'dev' then 'development'
+      when 'uat' then 'test'
+      else 'production'
+    end
+    
+    {
+      app_identifier: ENV['REAN_APP_IDENTIFIER'],
+      env_file: ".env.#{node_env}"
+    }
+  end
+
+  def get_dev_latest_version_code
+    # Get the latest version code from dev environment
+    dev_config = get_android_config('dev')
+    # In get_dev_latest_version_code method
+    version_codes = google_play_track_version_codes(
+      track: 'internal',
+      json_key: ENV["GOOGLE_PLAY_JSON_KEY_PATH"],
+      package_name: dev_config[:app_identifier]
+    )
+    
+    version_codes.first || 0
+  end
+
+  def increment_version_code(options)
+    env = options[:env] || 'dev'
+    config = get_android_config(env)
+    
+    new_version_code = if env == 'dev'
+      # For dev, increment from its own latest version
+      version_code = google_play_track_version_codes(
+        track: 'internal',
+        json_key: ENV["GOOGLE_PLAY_JSON_KEY_PATH"],
+        package_name: config[:app_identifier]
+      )[0] || 0
+      version_code + 1
+    else
+      # For UAT and prod, use dev's latest version code
+      get_dev_latest_version_code
+    end
+    
+    gradle_file = "../android/app/build.gradle"
+    regex_pattern = /versionCode\s+\d+/
+    regex_replacement = "versionCode #{new_version_code}"
+    update_gradle_version_code(
+      gradle_file_path: gradle_file,
+      regex_pattern: regex_pattern,
+      regex_replacement: regex_replacement
+    )
+  end
+
+    # Add this helper at the bottom of the file
+  def update_gradle_version_code(params)
+    gradle_file_path = params[:gradle_file_path]
+    regex_pattern = params[:regex_pattern]
+    regex_replacement = params[:regex_replacement]
+    
+    gradle_file = File.read(gradle_file_path)
+    new_gradle_file = gradle_file.gsub(regex_pattern, regex_replacement)
+    File.write(gradle_file_path, new_gradle_file)
+  end
+
+
+  desc "Submit a new Beta Build to Play Store"
+  lane :beta do |options|
+    env = options[:env] || 'dev'
+
+    gradle(
+      project_dir: "android",
+      task: 'clean',
+      print_command: false
+    )
+
+    increment_version_code(env: env)
+    config = get_android_config(env)
+    
+    releaseFilePath = File.join(ENV["REAN_KEYSTORE_PATH"])
+    
+
+    # Create release bundle (.aab) with signing configuration
+    gradle(
+      project_dir: "android",
+      task: 'bundle',
+      build_type: 'Release',
+      flavor: env,
+      print_command: false, # Disable printing the command since it's log credentials
+      properties: {
+        "android.injected.signing.store.file" => releaseFilePath,
+        "android.injected.signing.store.password" => ENV["REAN_STORE_PASSWORD"],
+        "android.injected.signing.key.alias" => ENV["REAN_KEYSTORE_KEY_ALIAS"],
+        "android.injected.signing.key.password" => ENV["REAN_KEYSTORE_PASSWORD"],
+      }
+    )
+    
+    aab_path = "android/app/build/outputs/bundle/#{env}Release/app-#{env}-release.aab"
+    # Upload to Play Store internal testing track as draft
+    # In beta lane
+    upload_to_play_store(
+      release_status: 'draft',
+      track: 'internal',
+      json_key: ENV["GOOGLE_PLAY_JSON_KEY_PATH"],
+      package_name: config[:app_identifier],
+      aab: aab_path
+    )
+
+  end
+  
+  desc "Increment Android version name and reset version code if needed"
+  lane :bump_version_android do |options|
+    version_type = options[:type] || "patch"
+    
+    # Read the current version from build.gradle
+    gradle_file = "../android/app/build.gradle"
+    gradle_content = File.read(gradle_file)
+    
+    # Extract current version name
+    current_version = gradle_content.match(/versionName\s+"(.*?)"/)[1]
+    major, minor, patch = current_version.split('.').map(&:to_i)
+    
+    case version_type
+    when "patch"
+      patch += 1
+    when "minor"
+      minor += 1
+      patch = 0
+    when "major"
+      major += 1
+      minor = 0
+      patch = 0
+    else
+      UI.user_error!("Invalid version type. Use 'patch', 'minor', or 'major'")
+    end
+    
+    new_version_name = "#{major}.#{minor}.#{patch}"
+    
+    # Update version name in build.gradle
+    new_gradle_content = gradle_content.gsub(
+      /versionName\s+"(.*?)"/,
+      "versionName \"#{new_version_name}\""
+    )
+    
+    # Reset version code to 1
+    new_gradle_content = new_gradle_content.gsub(
+      /versionCode\s+\d+/,
+      "versionCode 1"
+    )
+    
+    File.write(gradle_file, new_gradle_content)
+    UI.success "Updated Android version to #{new_version_name} and reset version code to 1"
+  end
+
+  lane :beta_dev do
+    beta(env: 'dev')
+  end
+
+  lane :beta_uat do
+    beta(env: 'uat')
+  end
+
+  lane :release_prod do
+    beta(env: 'prod')
+  end
+
+end
+
+platform :ios do
+  
+  before_all do
+    unless ENV['REAN_APP_IDENTIFIER'].nil?
+      setup_circle_ci
+      # Add API key configuration. this make sure that the rest of the action will use appstore api not pwd way
+      app_store_connect_api_key(
+        key_id: ENV['APP_STORE_CONNECT_API_KEY_KEY_ID'],
+        issuer_id: ENV['APP_STORE_CONNECT_API_KEY_ISSUER_ID'],
+        key_content: ENV['APP_STORE_CONNECT_API_KEY_KEY'],
+        is_key_content_base64: true,
+        in_house: false
+      )
+    end
+  end
+
+  def get_ios_config(env)
+    # Map env to Node environment
+    node_env = case env
+      when 'dev' then 'development'
+      when 'uat' then 'test'
+      else 'production'
+    end
+  
+    # Get display name based on environment
+    display_name = case env
+      when 'dev' then 'Rean-Dev'
+      when 'uat' then 'Rean-UAT'
+      else 'Rean'
+    end
+
+    configuration = case env
+      when 'uat' then 'ReleaseUAT'
+      when 'dev' then 'ReleaseDev'
+      else 'Release'
+    end
+    
+    # Update scheme naming to match Xcode
+    scheme = case env
+      when 'dev' then 'rean_dev'
+      when 'uat' then 'rean_uat'
+      else 'rean'
+    end
+    
+    {
+      scheme: scheme,
+      configuration: configuration,
+      display_name: display_name,
+      bundle_id: ENV['REAN_APP_IDENTIFIER'],
+      env_file: ".env.#{node_env}"
+    }
+  end
+
+  # since we use dev build number as the main build number across uat and prod, so then we need to get the latest
+  def get_dev_latest_build_number
+    dev_config = get_ios_config('dev')
+    version = get_version_number(xcodeproj: "ios/rean.xcodeproj")
+    latest_build = latest_testflight_build_number(
+      app_identifier: dev_config[:bundle_id],
+      version: version
+    )
+    latest_build || 0
+  end
+  
+  def increment_build_number_ios(options)
+    env = options[:env] || 'dev'
+    config = get_ios_config(env)
+    version = get_version_number(xcodeproj: "ios/rean.xcodeproj")
+    
+    new_build_number = if env == 'dev'
+      build_number = latest_testflight_build_number(
+        app_identifier: config[:bundle_id],
+        version: version
+      ) || 0
+      build_number + 1
+    else
+      get_dev_latest_build_number
+    end
+    
+    increment_build_number(
+      build_number: new_build_number,
+      xcodeproj: "ios/rean.xcodeproj"
+    )
+  end
+  
+  desc "Get certificates"
+  lane :certificates do
+
+    sync_code_signing(
+      type: "appstore",
+      app_identifier: ['kh.gov.rean', 'kh.gov.rean.uat', 'kh.gov.rean.dev'],
+      readonly: true
+    )
+  end
+
+  desc "Generate new certificates"
+  lane :generate_new_certificates do
+    sync_code_signing(
+      type: "appstore",
+      app_identifier:  ['kh.gov.rean', 'kh.gov.rean.uat', 'kh.gov.rean.dev'],
+      force_for_new_devices: true,
+      readonly: false
+    )
+  end
+
+  desc "deploy to TestFlight"
+  lane :beta do |options|
+    env = options[:env] || 'dev'
+    config = get_ios_config(env)
+
+    increment_build_number_ios(env: env)
+    
+    # Update Info.plist for proper app identification
+    update_info_plist(
+      xcodeproj: "ios/rean.xcodeproj",
+      plist_path: "rean/Info.plist",
+      block: proc do |plist|
+        plist["CFBundleDisplayName"] = config[:display_name]
+        plist["CFBundleIdentifier"] = config[:bundle_id]
+      end
+    )
+    
+    sync_code_signing(
+      type: "appstore",
+      app_identifier: config[:bundle_id],
+      readonly: true
+    )
+    
+    build_app(
+      workspace: "ios/rean.xcworkspace",
+      scheme: config[:scheme],
+      configuration: config[:configuration],
+      export_options: {
+        method: "app-store",
+        signingStyle: "manual",
+        teamID: ENV['FASTLANE_TEAM_ID'],
+        provisioningProfiles: {
+          config[:bundle_id] => config[:display_name]
+        }
+      }
+    )
+    
+    upload_to_testflight(
+      skip_waiting_for_build_processing: true
+    )
+  end
+
+  desc "Deploy to App Store" # currently not in use, use beta lane instead for now ()
+  lane :deploy do |options|  
+    env = options[:env] || 'prod'
+    config = get_ios_config(env)
+
+    # Load environment variables
+    Dotenv.load(File.expand_path("../#{config[:env_file]}", __dir__))
+
+    increment_build_number_ios(env: env)
+    
+    # Update Info.plist for proper app identification
+    update_info_plist(
+      xcodeproj: "ios/rean.xcodeproj",
+      plist_path: "rean/Info.plist",
+      block: proc do |plist|
+        plist["CFBundleDisplayName"] = config[:display_name]
+        plist["CFBundleIdentifier"] = config[:bundle_id]
+      end
+    )
+
+    sync_code_signing(
+      type: "appstore",
+      app_identifier: config[:bundle_id],
+      readonly: true
+    )
+
+    build_app(
+      workspace: "ios/rean.xcworkspace",
+      scheme: config[:scheme],
+      configuration: config[:configuration],
+      export_options: {
+        method: "app-store",
+        signingStyle: "manual",
+        teamID: ENV['FASTLANE_TEAM_ID'],
+        provisioningProfiles: {
+          config[:bundle_id] => config[:display_name]
+        }
+      }
+    )
+
+    upload_to_app_store(
+      force: true,
+      skip_metadata: true,
+      skip_screenshots: true,
+      run_precheck_before_submit: false,
+      submit_for_review: false
+    )
+  end
+
+  # Helper lanes for specific environments
+  lane :beta_dev do
+    beta(env: 'dev')
+  end
+
+  lane :beta_uat do
+    beta(env: 'uat')
+  end
+
+  lane :release_prod do
+    beta(env: 'prod')
+  end
+
+  desc "Increment Rean iOS version number and reset build number if needed"
+  lane :bump_version_ios do |options|
+    version_type = options[:type] || "patch"
+    
+    # Get current version
+    current_version = get_version_number(xcodeproj: "ios/rean.xcodeproj")
+    major, minor, patch = current_version.split('.').map(&:to_i)
+
+    case version_type
+    when "patch"
+      patch += 1
+    when "minor"
+      minor += 1
+      patch = 0
+    when "major"
+      major += 1
+      minor = 0
+      patch = 0
+    else
+      UI.user_error!("Invalid version type. Use 'patch', 'minor', or 'major'")
+    end
+
+    new_version_name = "#{major}.#{minor}.#{patch}"
+    increment_version_number(version_number: new_version_name, xcodeproj: "ios/rean.xcodeproj")
+
+    # Reset build number when patch/minor/major is bumped
+    increment_build_number(build_number: 1, xcodeproj: "ios/rean.xcodeproj")
+  end
+
+end

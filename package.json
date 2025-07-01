@@ -1,0 +1,51 @@
+{
+  "name": "ums-app-workspace",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "start": "turbo start",
+    "start:rean": "cd apps/rean && pnpm start",
+    "start:university": "cd apps/university && pnpm start ",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "check-types": "turbo run check-types",
+    "test": "turbo run test",
+    "test:watch": "turbo run test -- --watchAll",
+    "bump:rean:android:patch": "cd apps/rean && bundle exec fastlane android bump_version_android",
+    "bump:rean:android:minor": "cd apps/rean && bundle exec fastlane android bump_version_android type:minor",
+    "bump:rean:android:major": "cd apps/rean && bundle exec fastlane android bump_version_android type:major",
+    "bump:rean:ios:patch": "cd apps/rean && bundle exec fastlane ios bump_version_ios",
+    "bump:rean:ios:minor": "cd apps/rean && bundle exec fastlane ios bump_version_ios type:minor",
+    "bump:rean:ios:major": "cd apps/rean && bundle exec fastlane ios bump_version_ios type:major",
+    "bump:university:android:patch": "cd apps/university && bundle exec fastlane android bump_version_android",
+    "bump:university:android:minor": "cd apps/university && bundle exec fastlane android bump_version_android type:minor",
+    "bump:university:android:major": "cd apps/university && bundle exec fastlane android bump_version_android type:major",
+    "bump:university:ios:patch": "cd apps/university && bundle exec fastlane ios bump_version_ios",
+    "bump:university:ios:minor": "cd apps/university && bundle exec fastlane ios bump_version_ios type:minor",
+    "bump:university:ios:major": "cd apps/university && bundle exec fastlane ios bump_version_ios type:major",
+    "prepare": "husky",
+    "lint-staged": "lint-staged"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.0",
+    "prettier": "^3.5.2",
+    "turbo": "^2.4.2",
+    "typescript": "5.7.3"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "lint-staged": {
+    "apps/rean/**/*.{ts,tsx,js,jsx}": [
+      "sh -c 'cd apps/rean && pnpm eslint . --max-warnings 0 --fix' --"
+    ],
+    "apps/university/**/*.{ts,tsx,js,jsx}": [
+      "sh -c 'cd apps/university && pnpm eslint .  --max-warnings 0 --fix' --"
+    ],
+    "packages/ums-agent/**/*.{ts,tsx,js,jsx}": [
+      "sh -c 'cd packages/ums-agent && pnpm eslint . --max-warnings 0 --fix' --"
+    ]
+  }
+}

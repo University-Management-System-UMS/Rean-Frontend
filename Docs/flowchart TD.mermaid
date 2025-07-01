@@ -1,0 +1,27 @@
+flowchart TD
+    A[Start iOS Beta Lane] --> B[Increment Build Number]
+    B --> C[Get Certificates]
+    C --> |Using Appfile Credentials| D[Get Provisioning Profile]
+    D --> E[Update Project Provisioning]
+    E --> F[Update Project Team]
+    F --> G[Build IPA]
+    G --> |Sign with App Store Method| H[Upload to TestFlight]
+    H --> I[End]
+
+    subgraph "Certificate Process"
+    C --> C1[Connect to Apple Developer Portal]
+    C1 --> C2[Find Team Certificates]
+    C2 --> C3[Download to builds/]
+    end
+
+    subgraph "Profile Process"
+    D --> D1[Check Existing Profiles]
+    D1 --> D2[Match App ID & Team ID]
+    D2 --> D3[Download/Create Profile]
+    end
+
+    subgraph "Build Process"
+    G --> G1[Clean Build]
+    G1 --> G2[Code Sign]
+    G2 --> G3[Create IPA]
+    end

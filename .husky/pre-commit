@@ -1,0 +1,46 @@
+#!/bin/sh
+
+# Disable color output and terminal control sequences
+export TERM=dumb
+export NO_COLOR=1
+unset COLORTERM
+
+# Trap for cleanup on exit
+trap 'printf "\033[0m"' EXIT
+
+echo "Running pre-commit hooks..."
+
+# Get all staged files
+staged_files=$(git diff --cached --name-only --diff-filter=ACMR)
+
+# Check which projects have changes
+has_rean_changes=$(echo "$staged_files" | grep -q "^apps/rean/" && echo "true" || echo "false")
+has_university_changes=$(echo "$staged_files" | grep -q "^apps/university/" && echo "true" || echo "false")
+has_ui_changes=$(echo "$staged_files" | grep -q "^packages/ums-agent/" && echo "true" || echo "false")
+
+echo "⚠️  Note: If linting fails, your changes will be preserved but unstaged."
+echo "⚠️  You can fix the issues and then run 'git add' and commit again."
+
+pnpm lint-staged || {
+  echo "❌ Linting failed. Fix the issues and try committing again."
+  echo "Your changes are still there, just unstaged. Run 'git status' to see them."
+  exit 1
+}
+
+# Run tests based on changes
+if [ "$has_ui_changes" = "true" ]; then
+  echo "🧪 Running UI tests..."
+  (cd "$PWD/packages/ums-agent" && pnpm test 2>/dev/null) || { echo "❌ ums-agent tests failed"; exit 1; }
+fi
+
+if [ "$has_rean_changes" = "true" ]; then
+  echo "🧪 Running Rean tests..."
+  (cd "$PWD/apps/rean" && pnpm test 2>/dev/null) || { echo "❌ Rean tests failed"; exit 1; }
+fi
+
+if [ "$has_university_changes" = "true" ]; then
+  echo "🧪 Running University tests..."
+  (cd "$PWD/apps/university" && pnpm test 2>/dev/null) || { echo "❌ University tests failed"; exit 1; }
+fi
+
+echo "✅ Pre-commit checks passed!"

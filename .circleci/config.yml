@@ -1,0 +1,920 @@
+version: 2.1
+
+parameters:
+  rean_changed:
+    type: boolean
+    default: false
+  university_changed:
+    type: boolean
+    default: false
+  shared_changed:
+    type: boolean
+    default: false
+  app_paths:
+    type: string
+    default: "apps"
+  target_branch:
+    type: string
+    default: "develop"
+
+orbs:
+  ruby: circleci/ruby@2.0.0
+  macos: circleci/macos@2
+  android: circleci/android@3.0.2
+  node: circleci/node@5.0.2
+
+references:
+  branches: &branches
+    dev_branch: &dev_branch "develop"
+    uat_branch: &uat_branch "develop"
+    prod_branch: &prod_branch "main"
+
+# Define reusable commands
+commands:
+  setup_rean_dependencies:
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-gems-{{ checksum "apps/rean/Gemfile.lock" }}
+            - v1-gems-
+      - run:
+          name: Install Ruby gems
+          command: |
+            cd apps/rean
+            bundle config set path 'vendor/bundle'
+            bundle install
+      - save_cache:
+          key: v1-gems-{{ checksum "apps/rean/Gemfile.lock" }}
+          paths:
+            - apps/rean/vendor/bundle
+      - run:
+          name: Install Node.js dependencies
+          command: |
+            npm install -g pnpm
+            cd apps/rean
+            pnpm install
+      - run:
+          name: Install CocoaPods dependencies
+          command: |
+            cd apps/rean/ios
+            pod install
+      - run:
+          name: Setup Fastlane match
+          command: |
+            cd apps/rean
+            bundle exec fastlane ios certificates
+
+  setup_rean_android_dependencies:
+    steps:
+      - checkout
+      - run:
+          name: Install Ninja Build System
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y ninja-build
+      - node/install:
+          install-yarn: false
+          node-version: "23.9.0"
+      - restore_cache:
+          keys:
+            - v1-gems-{{ checksum "apps/rean/Gemfile.lock" }}
+            - v1-gems-
+      - run:
+          name: Install Ruby gems
+          command: |
+            cd apps/rean
+            bundle config set path 'vendor/bundle'
+            bundle install
+      - save_cache:
+          key: v1-gems-{{ checksum "apps/rean/Gemfile.lock" }}
+          paths:
+            - apps/rean/vendor/bundle
+      - run:
+          name: Install Node.js dependencies
+          command: |
+            npm install -g pnpm
+            cd apps/rean
+            pnpm install
+      - run:
+          name: Setup Android keystore
+          command: |
+            cd apps/rean
+            mkdir -p android/app
+            echo $REAN_KEYSTORE_DATA | base64 --decode > android/app/release.keystore
+
+  setup_university_dependencies:
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-gems-{{ checksum "apps/university/Gemfile.lock" }}
+            - v1-gems-
+      - run:
+          name: Install Ruby gems
+          command: |
+            cd apps/university
+            bundle config set path 'vendor/bundle'
+            bundle install
+      - save_cache:
+          key: v1-gems-{{ checksum "apps/university/Gemfile.lock" }}
+          paths:
+            - apps/university/vendor/bundle
+      - run:
+          name: Install Node.js dependencies
+          command: |
+            npm install -g pnpm
+            cd apps/university
+            pnpm install
+      - run:
+          name: Install CocoaPods dependencies
+          command: |
+            cd apps/university/ios
+            pod install
+      - run:
+          name: Setup Fastlane match
+          command: |
+            cd apps/university
+            bundle exec fastlane ios certificates
+
+  setup_university_android_dependencies:
+    steps:
+      - checkout
+      - run:
+          name: Install Ninja Build System
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y ninja-build
+      - node/install:
+          install-yarn: false
+          node-version: "23.9.0"
+      - restore_cache:
+          keys:
+            - v1-gems-{{ checksum "apps/university/Gemfile.lock" }}
+            - v1-gems-
+      - run:
+          name: Install Ruby gems
+          command: |
+            cd apps/university
+            bundle config set path 'vendor/bundle'
+            bundle install
+      - save_cache:
+          key: v1-gems-{{ checksum "apps/university/Gemfile.lock" }}
+          paths:
+            - apps/university/vendor/bundle
+      - run:
+          name: Install Node.js dependencies
+          command: |
+            npm install -g pnpm
+            cd apps/university
+            pnpm install
+      - run:
+          name: Setup Android keystore
+          command: |
+            cd apps/university
+            mkdir -p android/app
+            echo $UNIVERSITY_KEYSTORE_DATA | base64 --decode > android/app/release.keystore
+
+  install_node_dependencies:
+    parameters:
+      app_name:
+        type: string
+    steps:
+      - node/install:
+          node-version: "20.11"
+      - run:
+          name: Install dependencies
+          command: |
+            npm install -g pnpm
+            if [ "<< parameters.app_name >>" = "." ]; then
+              pnpm install
+            else
+              cd << pipeline.parameters.app_paths >>/<< parameters.app_name >>
+              pnpm install
+            fi
+
+# Job definitions
+jobs:
+  detect_changes:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - run:
+          name: Detect changes
+          command: |
+            # Debug available environment variables
+            echo "CIRCLE_BRANCH: $CIRCLE_BRANCH"
+            echo "CIRCLE_PIPELINE_ID: $CIRCLE_PIPELINE_ID"
+            echo "CIRCLE_TOKEN: ${CIRCLE_TOKEN:0:4}..." # Print first 4 chars for security
+            
+            # Fetch all branches and tags
+            git fetch --all --prune
+            git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+            
+            # Determine target branch based on current branch
+            if [[ "$CIRCLE_BRANCH" =~ ^epic/ ]]; then
+                # If current branch is epic/*, target is develop
+                TARGET_BRANCH="develop"
+            elif [[ "$CIRCLE_BRANCH" == "develop" ]]; then
+                # If current branch is develop, target is main
+                TARGET_BRANCH="main"
+            elif [[ "$CIRCLE_BRANCH" != "main" && ! "$CIRCLE_BRANCH" =~ ^epic/ ]]; then
+                # For feature branches (not main, develop, or epic/*), target latest epic branch
+                LATEST_EPIC=$(git for-each-ref --sort=-committerdate refs/remotes/origin/epic/ --format='%(refname:short)' | head -n 1)
+                if [ -n "$LATEST_EPIC" ]; then
+                    TARGET_BRANCH="${LATEST_EPIC#origin/}"
+                else
+                    echo "Warning: No epic branch found for feature branch comparison"
+                    exit 1
+                fi
+            else
+                echo "Error: Unexpected branch condition"
+                exit 1
+            fi
+            
+            echo "Current branch: $CIRCLE_BRANCH"
+            echo "Target branch for comparison: $TARGET_BRANCH"
+            
+            # Ensure we have the target branch
+            if ! git fetch origin "$TARGET_BRANCH"; then
+                echo "Error: Could not fetch $TARGET_BRANCH"
+                exit 1
+            fi
+            
+            # Get changed files with better error handling
+            if git rev-parse --verify "origin/$TARGET_BRANCH" >/dev/null 2>&1; then
+                MERGE_BASE=$(git merge-base HEAD "origin/$TARGET_BRANCH")
+                CHANGED_FILES=$(git diff --name-only "$MERGE_BASE" HEAD)
+                echo "Comparing changes between $MERGE_BASE and HEAD"
+            else
+                echo "Error: Target branch origin/$TARGET_BRANCH not found"
+                exit 1
+            fi
+            
+            echo "Changed files:"
+            echo "$CHANGED_FILES"
+            
+            # Initialize variables
+            REAN_CHANGED=false
+            UNIVERSITY_CHANGED=false
+            SHARED_CHANGED=false
+            
+            # Check for changes in specific directories
+            for FILE in $CHANGED_FILES; do
+              if [[ $FILE == apps/rean/* ]]; then
+                echo "Rean change detected: $FILE"
+                REAN_CHANGED=true
+              fi
+              if [[ $FILE == apps/university/* ]]; then
+                echo "University change detected: $FILE"
+                UNIVERSITY_CHANGED=true
+              fi
+              if [[ $FILE == packages/* ]]; then
+                echo "Shared code change detected: $FILE"
+                UNIVERSITY_CHANGED=false
+                REAN_CHANGED=false
+                SHARED_CHANGED=true
+              fi
+            done
+            
+            # Get pipeline parameters and workflow IDs
+            PIPELINE_DATA=$(curl -s "https://circleci.com/api/v2/pipeline/${CIRCLE_PIPELINE_ID}/workflow" \
+              -H "Circle-Token: ${CIRCLE_TOKEN}")
+            
+            REAN_WORKFLOW_ID=$(echo $PIPELINE_DATA | jq -r '.items[] | select(.name=="rean_workflow") | .id')
+            UNIVERSITY_WORKFLOW_ID=$(echo $PIPELINE_DATA | jq -r '.items[] | select(.name=="university_workflow") | .id')
+            SHARED_WORKFLOW_ID=$(echo $PIPELINE_DATA | jq -r '.items[] | select(.name=="shared_workflow") | .id')
+            
+            # Cancel workflows based on changes
+            if [ "$REAN_CHANGED" = false ] && [ -n "$REAN_WORKFLOW_ID" ]; then
+              echo "No Rean changes detected, canceling Rean workflow"
+              curl -X POST "https://circleci.com/api/v2/workflow/${REAN_WORKFLOW_ID}/cancel" \
+                -H "Circle-Token: ${CIRCLE_TOKEN}"
+            fi
+            
+            if [ "$UNIVERSITY_CHANGED" = false ] && [ -n "$UNIVERSITY_WORKFLOW_ID" ]; then
+              echo "No University changes detected, canceling University workflow"
+              curl -X POST "https://circleci.com/api/v2/workflow/${UNIVERSITY_WORKFLOW_ID}/cancel" \
+                -H "Circle-Token: ${CIRCLE_TOKEN}"
+            fi
+
+            if [ "$SHARED_CHANGED" = false ] && [ -n "$SHARED_WORKFLOW_ID" ]; then
+              echo "No Shared code changes detected, canceling Shared workflow"
+              curl -X POST "https://circleci.com/api/v2/workflow/${SHARED_WORKFLOW_ID}/cancel" \
+                -H "Circle-Token: ${CIRCLE_TOKEN}"
+            fi
+            
+            # Save results to workspace
+            mkdir -p /tmp/workspace
+            echo "$REAN_CHANGED" > /tmp/workspace/rean_changed
+            echo "$UNIVERSITY_CHANGED" > /tmp/workspace/university_changed
+            echo "$SHARED_CHANGED" > /tmp/workspace/shared_changed
+            
+            echo "Rean changes: $REAN_CHANGED"
+            echo "University changes: $UNIVERSITY_CHANGED"
+            echo "Shared changes: $SHARED_CHANGED"
+      - persist_to_workspace:
+          root: /tmp/workspace
+          paths:
+            - rean_changed
+            - university_changed
+            - shared_changed
+
+  test_app:
+    parameters:
+      app_name:
+        type: string
+    docker:
+      - image: cimg/node:20.11
+    steps:
+      - checkout
+      - install_node_dependencies:
+          app_name: << parameters.app_name >>
+      - run:
+          name: Run tests
+          command: |
+            if [ "<< parameters.app_name >>" = "." ]; then
+              pnpm test
+            else
+              cd << pipeline.parameters.app_paths >>/<< parameters.app_name >>
+              pnpm test
+            fi
+
+  lint_app:
+    parameters:
+      app_name:
+        type: string
+    docker:
+      - image: cimg/node:20.11
+    steps:
+      - checkout
+      - install_node_dependencies:
+          app_name: << parameters.app_name >>
+      - run:
+          name: Run lint
+          command: |
+            if [ "<< parameters.app_name >>" = "." ]; then
+              pnpm lint
+            else
+              cd << pipeline.parameters.app_paths >>/<< parameters.app_name >>
+              pnpm lint
+            fi
+
+  deploy_rean_ios:
+    macos:
+      xcode: 16.2.0
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/workspace
+      
+      - setup_rean_dependencies
+      - run:
+          name: Build and deploy to TestFlight
+          command: |
+            cd apps/rean
+            bundle exec fastlane ios beta_dev
+
+  deploy_rean_android:
+    docker:
+      - image: cimg/android:2024.01
+    resource_class: xlarge
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/workspace
+      
+      - setup_rean_android_dependencies
+      - run:
+          name: Build and deploy to Play Store
+          command: |
+            cd apps/rean
+            bundle exec fastlane android beta_dev
+
+  deploy_university_ios:
+    macos:
+      xcode: 16.2.0
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/workspace
+
+      - setup_university_dependencies
+      - run:
+          name: Build and deploy to TestFlight
+          command: |
+            cd apps/university
+            bundle exec fastlane ios beta_dev
+
+      - store_artifacts:
+          path: apps/university/output
+          destination: output
+
+  deploy_university_android:
+    docker:
+      - image: cimg/android:2024.01
+    resource_class: xlarge
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/workspace
+      - setup_university_android_dependencies
+      - run:
+          name: Build and deploy to Play Store
+          command: |
+            cd apps/university
+            bundle exec fastlane android beta_dev
+
+  # UAT Jobs
+  deploy_rean_ios_uat:
+    macos:
+      xcode: 16.2.0
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/workspace
+      
+      - setup_rean_dependencies
+      - run:
+          name: Build and deploy to TestFlight UAT
+          command: |
+            cd apps/rean
+            bundle exec fastlane ios beta_uat
+
+  deploy_rean_android_uat:
+    docker:
+      - image: cimg/android:2024.01
+    resource_class: xlarge
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/workspace
+      
+      - setup_rean_android_dependencies
+      - run:
+          name: Build and deploy to Play Store UAT
+          command: |
+            cd apps/rean
+            bundle exec fastlane android beta_uat
+
+  deploy_university_ios_uat:
+    macos:
+      xcode: 16.2.0
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - setup_university_dependencies
+      - run:
+          name: Build and deploy to TestFlight UAT
+          command: |
+            cd apps/university
+            bundle exec fastlane ios beta_uat
+
+  deploy_university_android_uat:
+    docker:
+      - image: cimg/android:2024.01
+    resource_class: xlarge
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - setup_university_android_dependencies
+      - run:
+          name: Build and deploy to Play Store UAT
+          command: |
+            cd apps/university
+            bundle exec fastlane android beta_uat
+
+  # Production Jobs
+  deploy_rean_ios_prod:
+    macos:
+      xcode: 16.2.0
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/workspace
+      
+      - setup_rean_dependencies
+      - run:
+          name: Build and deploy to App Store
+          command: |
+            cd apps/rean
+            bundle exec fastlane ios release
+
+  deploy_rean_android_prod:
+    docker:
+      - image: cimg/android:2024.01
+    resource_class: xlarge
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/workspace
+      
+      - setup_rean_android_dependencies
+      - run:
+          name: Build and deploy to Play Store Production
+          command: |
+            cd apps/rean
+            bundle exec fastlane android release
+            
+  deploy_university_ios_prod:
+    macos:
+      xcode: 16.2.0
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - setup_university_dependencies
+      - run:
+          name: Build and deploy to App Store
+          command: |
+            cd apps/university
+            bundle exec fastlane ios release
+
+  deploy_university_android_prod:
+    docker:
+      - image: cimg/android:2024.01
+    resource_class: xlarge
+    working_directory: ~/ums-app-workspace
+    environment:
+      FL_OUTPUT_DIR: output
+      FASTLANE_SKIP_UPDATE_CHECK: true
+    steps:
+      - checkout
+      - setup_university_android_dependencies
+      - run:
+          name: Build and deploy to Play Store Production
+          command: |
+            cd apps/university
+            bundle exec fastlane android release
+
+workflows:
+  version: 2
+  rean_workflow:
+    when:
+      condition:
+        and:
+          - equal: [ true, << pipeline.parameters.rean_changed >> ]
+          - not: 
+              equal: [ true, << pipeline.parameters.shared_changed >> ]
+    jobs:
+      - detect_changes
+      - test_app:
+          name: test_rean
+          app_name: rean
+          requires:
+            - detect_changes
+      - lint_app:
+          name: lint_rean
+          app_name: rean
+          requires:
+            - detect_changes
+      - deploy_rean_ios:
+          context: 
+            - shared-credentials
+            - rean-development
+          requires:
+            - test_rean
+            - lint_rean
+          filters:
+            branches:
+              only: *dev_branch
+      - deploy_rean_android:
+          context: 
+            - shared-credentials
+            - rean-development
+          requires:
+            - test_rean
+            - lint_rean
+          filters:
+            branches:
+              only: *dev_branch
+      # UAT Jobs
+      - hold_uat:
+          type: approval
+          requires:
+            - deploy_rean_ios
+            - deploy_rean_android
+          filters:
+            branches:
+              only: *uat_branch
+      - deploy_rean_ios_uat:
+          requires:
+            - hold_uat
+          context: 
+            - shared-credentials
+            - rean-uat
+          filters:
+            branches:
+              only: *uat_branch
+      - deploy_rean_android_uat:
+          requires:
+            - hold_uat
+          context: 
+            - shared-credentials
+            - rean-uat
+          filters:
+            branches:
+              only: *uat_branch
+      # Production Jobs
+      - hold_prod:
+          type: approval
+          requires:
+            - deploy_rean_ios_uat
+            - deploy_rean_android_uat
+          filters:
+            branches:
+              only: *prod_branch
+      - deploy_rean_ios_prod:
+          requires:
+            - hold_prod
+          context: 
+            - shared-credentials
+            - rean-production
+          filters:
+            branches:
+              only: *prod_branch
+      - deploy_rean_android_prod:
+          requires:
+            - hold_prod
+          context: 
+            - shared-credentials
+            - rean-production
+          filters:
+            branches:
+              only: *prod_branch
+
+  university_workflow:
+    when:
+      condition:
+        and:
+          - equal: [ true, << pipeline.parameters.university_changed >> ]
+          - not:
+              equal: [ true, << pipeline.parameters.shared_changed >> ]
+    jobs:
+      - detect_changes
+      - test_app:
+          name: test_university
+          app_name: university
+          requires:
+            - detect_changes
+      - lint_app:
+          name: lint_university
+          app_name: university
+          requires:
+            - detect_changes
+      - deploy_university_ios:
+          context: 
+            - shared-credentials
+            - university-dev
+          requires:
+            - test_university
+            - lint_university
+          filters:
+            branches:
+              only: *dev_branch
+      - deploy_university_android:
+          context: 
+            - shared-credentials
+            - university-dev
+          requires:
+            - test_university
+            - lint_university
+          filters:
+            branches:
+              only: *dev_branch
+      # UAT Deployment (requires approval)
+      - hold_uat:
+          type: approval
+          requires:
+            - deploy_university_ios
+            - deploy_university_android
+          filters:
+            branches:
+              only: *uat_branch
+      - deploy_university_ios_uat:
+          requires:
+            - hold_uat
+          context: 
+            - shared-credentials
+            - university-uat
+          filters:
+            branches:
+              only: *uat_branch
+      - deploy_university_android_uat:
+          requires:
+            - hold_uat
+          context: 
+            - shared-credentials
+            - university-uat
+          filters:
+            branches:
+              only: *uat_branch
+      # Production Deployment (requires approval)
+      - hold_prod:
+          type: approval
+          requires:
+            - deploy_university_ios_uat
+            - deploy_university_android_uat
+          filters:
+            branches:
+              only: *prod_branch
+      - deploy_university_ios_prod:
+          requires:
+            - hold_prod
+          context: 
+            - shared-credentials
+            - university-production
+          filters:
+            branches:
+              only: *prod_branch
+      - deploy_university_android_prod:
+          requires:
+            - hold_prod
+          context: 
+            - shared-credentials
+            - university-production
+          filters:
+            branches:
+              only: *prod_branch
+
+
+  shared_workflow:
+    when:
+      condition:
+        equal: [ true, << pipeline.parameters.shared_changed >> ]
+    jobs:
+      - detect_changes
+      - test_app:
+          name: test_shared
+          app_name: "."
+          requires:
+            - detect_changes
+      - lint_app:
+          name: lint_shared
+          app_name: "."
+          requires:
+            - detect_changes
+      # Dev deployments
+      - deploy_rean_ios:
+          requires:
+            - test_shared
+            - lint_shared
+          filters:
+            branches:
+              only: *dev_branch
+      - deploy_rean_android:
+          requires:
+            - test_shared
+            - lint_shared
+          filters:
+            branches:
+              only: *dev_branch
+      - deploy_university_ios:
+          requires:
+            - test_shared
+            - lint_shared
+          filters:
+            branches:
+              only: *dev_branch
+      - deploy_university_android:
+          requires:
+            - test_shared
+            - lint_shared
+          filters:
+            branches:
+              only: *dev_branch
+      # UAT deployments
+      - hold_uat:
+          type: approval
+          requires:
+            - deploy_rean_ios
+            - deploy_rean_android
+            - deploy_university_ios
+            - deploy_university_android
+          filters:
+            branches:
+              only: *uat_branch
+      - deploy_rean_ios_uat:
+          requires:
+            - hold_uat
+          context: 
+            - shared-credentials
+            - rean-uat
+          filters:
+            branches:
+              only: *uat_branch
+      - deploy_rean_android_uat:
+          requires:
+            - hold_uat
+          context: 
+            - shared-credentials
+            - rean-uat
+          filters:
+            branches:
+              only: *uat_branch
+      - deploy_university_ios_uat:
+          requires:
+            - hold_uat
+          context: 
+            - shared-credentials
+            - university-uat
+          filters:
+            branches:
+              only: *uat_branch
+      - deploy_university_android_uat:
+          requires:
+            - hold_uat
+          context: 
+            - shared-credentials
+            - university-uat
+          filters:
+            branches:
+              only: *uat_branch
+      # Production deployments
+      - hold_prod:
+          type: approval
+          requires:
+            - deploy_rean_ios_uat
+            - deploy_rean_android_uat
+            - deploy_university_ios_uat
+            - deploy_university_android_uat
+          filters:
+            branches:
+              only: *prod_branch
+      - deploy_rean_ios_prod:
+          requires:
+            - hold_prod
+          context: 
+            - shared-credentials
+            - rean-production
+          filters:
+            branches:
+              only: *prod_branch
+      - deploy_rean_android_prod:
+          requires:
+            - hold_prod
+          context: 
+            - shared-credentials
+            - rean-production
+          filters:
+            branches:
+              only: *prod_branch
+      - deploy_university_ios_prod:
+          requires:
+            - hold_prod
+          context: 
+            - shared-credentials
+            - university-production
+          filters:
+            branches:
+              only: *prod_branch
+      - deploy_university_android_prod:
+          requires:
+            - hold_prod
+          context: 
+            - shared-credentials
+            - university-production
+          filters:
+            branches:
+              only: *prod_branch

@@ -1,0 +1,11 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true
+  },
+  "include": ["src", "../../apps/rean/components/ums-tabs.tsx"],
+  "exclude": ["node_modules", "dist"]
+}

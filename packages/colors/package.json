@@ -1,0 +1,16 @@
+{
+    "name": "@repo/colors",
+    "version": "0.0.0",
+    "type": "module",
+    "private": true,
+    "main": "./color.ts",
+    "types": "./color.ts",
+    "exports": {
+      ".": {
+        "import": "./color.ts",
+        "require": "./color.ts",
+        "types": "./color.ts"
+      }
+    }
+  }
+  

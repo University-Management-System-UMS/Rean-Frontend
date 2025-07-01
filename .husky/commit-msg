@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Disable color output
+export TERM=dumb
+unset COLORTERM
+
+# Get the commit message
+commit_message=$(cat "$1")
+
+# Define the allowed types
+types="feat|fix|refactor|docs|style|test|chore|perf|build|ci|revert|merge|hotfix|config|deps|sec|wip|ui|deploy"
+regex="^($types): .+$"
+
+if ! echo "$commit_message" | grep -Eq "$regex"; then
+  printf "\n\nError: Invalid commit message format. Please use one of the following types:\n\n"
+  printf "  feat: New feature\n"
+  printf "  fix: Bug fix\n"
+  printf "  refactor: Code refactor\n"
+  printf "  docs: Documentation changes\n"
+  printf "  style: Code formatting\n"
+  printf "  test: Adding tests\n"
+  printf "  chore: Maintenance tasks\n"
+  printf "  perf: Performance improvement\n"
+  printf "  build: Build process changes\n"
+  printf "  ci: CI configuration changes\n"
+  printf "  revert: Reverting commits\n"
+  printf "  merge: Merging branches\n"
+  printf "  hotfix: Urgent fixes\n"
+  printf "  config: Configuration changes\n"
+  printf "  deps: Dependency updates\n"
+  printf "  sec: Security changes\n"
+  printf "  wip: Work in progress\n"
+  printf "  ui: User interface updates\n"
+  printf "  deploy: Deployment changes\n\n"
+  printf "Example: 'feat: add new authentication feature'\n"
+  exit 1
+fi
+
+exit 0
